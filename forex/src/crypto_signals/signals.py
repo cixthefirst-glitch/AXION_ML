@@ -10,22 +10,40 @@ import pandas as pd
 
 @dataclass
 class Signal:
+    """Trading signal with comprehensive information for execution and tracking."""
+
     symbol: str
+    pair: str  # Trading pair (e.g., BTC_USDT)
     timeframe: str
-    direction: str
-    probability: float
+    direction: str  # LONG or SHORT
+    probability: float  # Confidence from model (0-1)
     entry: float
     stop_loss: float
     take_profit_1: float
     take_profit_2: float
-    trend_bias: int
-    volume: float
-    volatility: float
-    grade: str
-    risk_reward: float
-    rank: int
-    timestamp: datetime
-    note: str
+    take_profit_3: Optional[float] = None
+    risk_reward: float = 0.0
+    confidence_score: float = 0.0  # Percentage 0-100
+    trend_bias: int = 0
+    volume: float = 0.0
+    volatility: float = 0.0
+    grade: str = ""
+    rank: int = 0
+    timestamp: datetime = None
+    note: str = ""
+    explanation: str = ""  # Why signal was generated
+    pattern_detected: str = ""  # Pattern name/type
+    support_level: Optional[float] = None
+    resistance_level: Optional[float] = None
+    score_components: Optional[dict] = None  # Individual score breakdown
+
+    def __post_init__(self):
+        if self.timestamp is None:
+            self.timestamp = datetime.utcnow()
+        if not self.pair:
+            self.pair = self.symbol
+        if self.confidence_score == 0.0:
+            self.confidence_score = self.probability * 100
 
 
 def build_signal(
@@ -38,10 +56,29 @@ def build_signal(
     stop_loss_multiplier: float = 1.2,
     take_profit_1_multiplier: float = 2.0,
     take_profit_2_multiplier: float = 4.0,
+    take_profit_3_multiplier: Optional[float] = 6.0,
 ) -> Optional[Signal]:
-    class_map = {0: "HOLD", 1: "BUY", 2: "SELL"}
+    """Build a signal from model predictions and technical features.
+    
+    Args:
+        symbol: Trading symbol
+        timeframe: Timeframe for the signal
+        features: Feature series with technical indicators
+        label: Predicted label (0=HOLD, 1=BUY, 2=SELL)
+        probabilities: Model prediction probabilities
+        threshold: Minimum probability threshold
+        stop_loss_multiplier: ATR multiplier for stop loss
+        take_profit_1_multiplier: ATR multiplier for TP1
+        take_profit_2_multiplier: ATR multiplier for TP2
+        take_profit_3_multiplier: ATR multiplier for TP3
+        
+    Returns:
+        Signal object or None if filtered
+    """
+    class_map = {0: "HOLD", 1: "LONG", 2: "SHORT"}
     direction = class_map.get(label, "HOLD")
     probability = float(np.max(probabilities))
+    
     if direction == "HOLD" or probability < threshold:
         return None
 
@@ -52,64 +89,126 @@ def build_signal(
     volatility = float(features["volatility_21"])
     volume_spike = bool(features["volume_spike"])
 
-    if direction == "BUY":
+    if direction == "LONG":
         entry = close
         stop_loss = close - atr * stop_loss_multiplier
         take_profit_1 = close + atr * take_profit_1_multiplier
         take_profit_2 = close + atr * take_profit_2_multiplier
-        note = "Strong uptrend" if trend_bias > 0 else "Momentum setup"
+        take_profit_3 = (
+            close + atr * take_profit_3_multiplier if take_profit_3_multiplier else None
+        )
+        explanation = "Strong uptrend detected" if trend_bias > 0 else "Bullish momentum setup"
     else:
         entry = close
         stop_loss = close + atr * stop_loss_multiplier
         take_profit_1 = close - atr * take_profit_1_multiplier
         take_profit_2 = close - atr * take_profit_2_multiplier
-        note = "Strong downtrend" if trend_bias < 0 else "Momentum setup"
+        take_profit_3 = (
+            close - atr * take_profit_3_multiplier if take_profit_3_multiplier else None
+        )
+        explanation = "Strong downtrend detected" if trend_bias < 0 else "Bearish momentum setup"
 
-    risk_reward = abs((take_profit_1 - entry) / (entry - stop_loss)) if stop_loss != entry else 0.0
-    grade = "A" if probability >= 0.95 and risk_reward >= 2.0 else "B" if probability >= 0.92 else "C"
+    risk_reward = (
+        abs((take_profit_1 - entry) / (entry - stop_loss))
+        if stop_loss != entry
+        else 0.0
+    )
+    grade = (
+        "A"
+        if probability >= 0.95 and risk_reward >= 2.0
+        else "B"
+        if probability >= 0.92
+        else "C"
+    )
+
+    note = f"{'Strong' if abs(trend_bias) > 2 else 'Moderate'} {'uptrend' if trend_bias > 0 else 'downtrend'}"
+    if volume_spike:
+        note += " | Volume spike detected"
+
+    score_components = {
+        "model_confidence": probability,
+        "trend_strength": abs(trend_bias) / 3,  # Normalize to 0-1
+        "volatility": min(volatility / 0.01, 1.0),  # Normalize
+        "volume_factor": 1.0 if volume_spike else 0.7,
+    }
 
     return Signal(
         symbol=symbol,
+        pair=symbol,
         timeframe=timeframe,
         direction=direction,
         probability=probability,
-        entry=round(entry, 6),
-        stop_loss=round(stop_loss, 6),
-        take_profit_1=round(take_profit_1, 6),
-        take_profit_2=round(take_profit_2, 6),
+        entry=round(entry, 8),
+        stop_loss=round(stop_loss, 8),
+        take_profit_1=round(take_profit_1, 8),
+        take_profit_2=round(take_profit_2, 8),
+        take_profit_3=round(take_profit_3, 8) if take_profit_3 else None,
+        risk_reward=round(risk_reward, 2),
+        confidence_score=round(probability * 100, 1),
         trend_bias=trend_bias,
         volume=round(volume, 2),
-        volatility=round(volatility, 6),
+        volatility=round(volatility, 8),
         grade=grade,
-        risk_reward=round(risk_reward, 2),
         rank=0,
         timestamp=datetime.utcnow(),
-        note=note + (" | Volume spike" if volume_spike else ""),
+        note=note,
+        explanation=explanation,
+        score_components=score_components,
     )
 
 
 def filter_signed_signals(signals: List[Signal], top_n: int) -> List[Signal]:
-    ranked = sorted(signals, key=lambda item: item.probability, reverse=True)
+    """Filter and rank signals by confidence.
+    
+    Args:
+        signals: List of Signal objects
+        top_n: Maximum number of signals to return
+        
+    Returns:
+        Top N signals ranked by confidence
+    """
+    ranked = sorted(
+        signals, key=lambda item: item.probability * item.risk_reward, reverse=True
+    )
     for index, signal in enumerate(ranked, start=1):
         signal.rank = index
     return ranked[:top_n]
 
 
-def format_telegram_message(signals: List[Signal]) -> str:
+def format_telegram_message(signals: List[Signal], include_emoji: bool = True) -> str:
+    """Format signals for Telegram channel message.
+    
+    Args:
+        signals: List of Signal objects
+        include_emoji: Whether to include emoji in formatting
+        
+    Returns:
+        Formatted Telegram message
+    """
     if not signals:
-        return "No high-conviction setups detected at this time."
+        return "✅ No high-conviction setups detected at this time."
 
-    lines = ["🚨 *Market Signal Summary*", ""]
+    lines = ["🚨 *MARKET SIGNALS ALERT*" if include_emoji else "*MARKET SIGNALS ALERT*", ""]
+    lines.append(f"⏰ Generated: {datetime.utcnow().strftime('%Y--%m--%d %H:%M:%S UTC')}")
+    lines.append("")
+    lines.append("⚠️ *Risk Warning: Trading involves significant risk. Please trade responsibly.*")
+    lines.append("")
+
     for signal in signals:
-        lines.append(f"*{signal.symbol}* — {signal.direction} — {signal.probability:.0%}")
-        lines.append(f"Timeframe: {signal.timeframe}")
-        lines.append(f"Entry: {signal.entry}")
-        lines.append(f"Stop Loss: {signal.stop_loss}")
-        lines.append(f"Take Profit 1: {signal.take_profit_1}")
-        lines.append(f"Take Profit 2: {signal.take_profit_2}")
-        lines.append(f"Risk : Reward: {signal.risk_reward:.2f} | Grade: {signal.grade}")
-        lines.append(f"Trend bias: {signal.trend_bias}, Volatility: {signal.volatility:.6f}")
-        lines.append(f"Volume: {signal.volume}")
-        lines.append(f"Note: {signal.note}")
-        lines.append("---")
+        emoji = "📈" if signal.direction == "LONG" else "📉"
+        lines.append(f"{emoji} *{signal.symbol}* `{signal.direction}`")
+        lines.append(f"Grade: {signal.grade} | Confidence: {signal.confidence_score:.0f}%")
+        lines.append("")
+        lines.append(f"📍 Entry: `{signal.entry:,.8f}`")
+        lines.append(f"🛑 Stop Loss: `{signal.stop_loss:,.8f}`")
+        lines.append(f"✅ TP1: `{signal.take_profit_1:,.8f}`")
+        lines.append(f"✅ TP2: `{signal.take_profit_2:,.8f}`")
+        if signal.take_profit_3:
+            lines.append(f"✅ TP3: `{signal.take_profit_3:,.8f}`")
+        lines.append(f"📊 R:R Ratio: {signal.risk_reward:.2f}")
+        lines.append(f"📈 Timeframe: {signal.timeframe}")
+        lines.append(f"💬 {signal.explanation}")
+        lines.append("─────────────────────")
+        lines.append("")
+
     return "\n".join(lines)

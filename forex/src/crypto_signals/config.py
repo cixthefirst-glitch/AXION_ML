@@ -4,7 +4,7 @@ import argparse
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 try:
     from dotenv import load_dotenv
@@ -33,6 +33,13 @@ def get_env_float(key: str, default: float) -> float:
     return float(value) if value is not None else default
 
 
+def get_env_list(key: str, default: Optional[str] = None) -> Optional[List[str]]:
+    value = os.environ.get(key, default)
+    if value is None:
+        return None
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 @dataclass
 class Config:
     api_key: Optional[str]
@@ -40,6 +47,9 @@ class Config:
     api_base_url: Optional[str]
     telegram_token: Optional[str]
     telegram_chat_id: Optional[str]
+    telegram_user_id: Optional[str]
+    telegram_channel_id: Optional[str]
+    coingecko_api_key: Optional[str]
     timeframe: str
     scan_limit: int
     training_pairs: int
@@ -53,10 +63,18 @@ class Config:
     stop_loss_multiplier: float
     take_profit_1_multiplier: float
     take_profit_2_multiplier: float
+    default_leverage: int
+    max_open_trades: int
+    risk_percentage: float
+    futures_only: bool
+    default_margin_mode: str
+    min_confidence_score: float
     model_path: str
     retrain: bool
     log_level: str
     model_type: str
+    enable_smc: bool
+    smc_features: List[str]
 
     @classmethod
     def from_cli(cls) -> "Config":
@@ -83,16 +101,37 @@ class Config:
         parser.add_argument("--model-path", default="models/crypto_signal_v1.joblib", help="Path to save or load trained model")
         parser.add_argument("--retrain", action="store_true", help="Force retraining of the model")
         parser.add_argument("--model-type", default="xgboost", choices=["xgboost", "random_forest"], help="Model family to use")
+        parser.add_argument("--enable-smc", action="store_true", help="Enable Smart Money Concepts feature extraction")
+        parser.add_argument(
+            "--smc-features",
+            default=None,
+            help="Comma-separated list of SMC features to include, or omit to enable all SMC features",
+        )
         parser.add_argument("--log-level", default="INFO", help="Logging level")
+        parser.add_argument("--telegram-user-id", default=None, help="Telegram user ID for DM notifications")
+        parser.add_argument("--telegram-channel-id", default=None, help="Telegram channel ID for public signals")
+        parser.add_argument("--default-leverage", type=int, default=5, help="Default leverage for futures trades")
+        parser.add_argument("--max-open-trades", type=int, default=5, help="Maximum simultaneous open trades")
+        parser.add_argument("--risk-percentage", type=float, default=1.0, help="Risk percentage per trade")
+        parser.add_argument("--futures-only", action="store_true", help="Only analyze futures markets")
+        parser.add_argument("--default-margin-mode", default="ISOLATED", choices=["ISOLATED","CROSS"], help="Default margin mode")
+        parser.add_argument("--min-confidence-score", type=float, default=0.0, help="Minimum confidence score for trade execution (0-100)")
         args = parser.parse_args()
 
         load_env_file(args.env_file)
 
-        api_key = args.api_key or get_env("API_KEY") or get_env("EXCHANGE_API_KEY")
-        api_secret = args.api_secret or get_env("API_SECRET") or get_env("EXCHANGE_API_SECRET")
+        api_key = args.api_key or get_env("API_KEY") or get_env("EXCHANGE_API_KEY") or get_env("MEXC_API_KEY")
+        api_secret = args.api_secret or get_env("API_SECRET") or get_env("EXCHANGE_API_SECRET") or get_env("MEXC_API_SECRET")
         api_base_url = args.api_base_url or get_env("API_BASE_URL")
         telegram_token = args.telegram_token or get_env("TELEGRAM_TOKEN") or get_env("TG_BOT_TOKEN")
         telegram_chat_id = args.telegram_chat_id or get_env("TELEGRAM_CHAT_ID")
+        telegram_user_id = args.telegram_user_id or get_env("TELEGRAM_USER_ID")
+        telegram_channel_id = args.telegram_channel_id or get_env("TELEGRAM_CHANNEL_ID") or get_env("TELEGRAM_CHANNEL")
+        coingecko_api_key = get_env("COINGECKO_API_KEY")
+
+        smc_features = get_env_list("SMC_FEATURES", args.smc_features)
+        if args.smc_features is not None:
+            smc_features = [item.strip() for item in args.smc_features.split(",") if item.strip()]
 
         return cls(
             api_key=api_key,
@@ -100,6 +139,8 @@ class Config:
             api_base_url=api_base_url,
             telegram_token=telegram_token,
             telegram_chat_id=telegram_chat_id,
+            telegram_user_id=telegram_user_id,
+            telegram_channel_id=telegram_channel_id,
             timeframe=args.timeframe,
             scan_limit=args.scan_limit,
             training_pairs=args.training_pairs,
@@ -113,8 +154,17 @@ class Config:
             stop_loss_multiplier=get_env_float("STOP_LOSS_MULTIPLIER", args.stop_loss_multiplier),
             take_profit_1_multiplier=get_env_float("TAKE_PROFIT_1_MULTIPLIER", args.take_profit_1_multiplier),
             take_profit_2_multiplier=get_env_float("TAKE_PROFIT_2_MULTIPLIER", args.take_profit_2_multiplier),
+            default_leverage=int(get_env("DEFAULT_LEVERAGE") or args.default_leverage),
+            max_open_trades=int(get_env("MAX_OPEN_TRADES") or args.max_open_trades),
+            risk_percentage=float(get_env("RISK_PERCENTAGE") or args.risk_percentage),
+            futures_only=bool(get_env("FUTURES_ONLY") == "1" or args.futures_only),
+            default_margin_mode=(get_env("DEFAULT_MARGIN_MODE") or args.default_margin_mode),
+            min_confidence_score=float(get_env("MIN_CONFIDENCE_SCORE") or args.min_confidence_score),
             model_path=args.model_path,
             retrain=args.retrain,
             log_level=args.log_level,
             model_type=args.model_type,
+            enable_smc=args.enable_smc,
+            smc_features=smc_features or [],
+            coingecko_api_key=coingecko_api_key,
         )

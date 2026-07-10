@@ -11,7 +11,9 @@ from src.crypto_signals.logger import setup_logger
 from src.crypto_signals.model import SignalModel
 from src.crypto_signals.scanner import ScannerConfig, SignalScanner
 from src.crypto_signals.signals import format_telegram_message
-from src.crypto_signals.telegram import send_telegram_message
+from src.crypto_signals.telegram import TelegramConfig, TelegramNotifier
+from src.crypto_signals.coin_info import CoinInfoManager
+from src.crypto_signals.futures_filter import FuturesFilter, FuturesPairFilter
 
 
 def main() -> None:
@@ -23,7 +25,19 @@ def main() -> None:
         base_url=config.api_base_url,
     )
 
-    model = SignalModel(model_path=config.model_path, model_type=config.model_type)
+    # Coin info manager (MEXC + CoinGecko)
+    coin_manager = CoinInfoManager(
+        mexc_key=config.api_key or "",
+        mexc_secret=config.api_secret or "",
+        coingecko_key=getattr(config, "coingecko_api_key", None),
+    )
+
+    model = SignalModel(
+        model_path=config.model_path,
+        model_type=config.model_type,
+        include_smc=config.enable_smc,
+        smc_features=config.smc_features,
+    )
     if config.retrain or not model.exists():
         logger.info("Training new model using %s symbols", config.training_pairs)
         symbols = client.get_top_symbols(limit=config.training_pairs)
@@ -40,7 +54,12 @@ def main() -> None:
         if not frames:
             raise RuntimeError("Unable to collect any training history from the exchange")
 
-        training_dataset = SignalModel.build_training_dataset(frames, reward_risk=config.risk_reward)
+        training_dataset = SignalModel.build_training_dataset(
+            frames,
+            reward_risk=config.risk_reward,
+            include_smc=config.enable_smc,
+            smc_features=config.smc_features,
+        )
         metrics = model.fit(training_dataset, training_dataset["target"])
         logger.info("Training metrics: %s", metrics)
         backtest = backtest_model(model, training_dataset[model.feature_columns], training_dataset["target"], training_dataset["pct_return"])
@@ -52,7 +71,15 @@ def main() -> None:
             raise RuntimeError("Failed to load an existing model")
         logger.info("Loaded model from %s", config.model_path)
 
-    symbols = client.get_top_symbols(limit=config.scan_limit)
+    # Fetch candidate symbols; prefer futures-only list if configured
+    if config.futures_only:
+        coin_infos = coin_manager.get_all_futures_coins()
+        futures_filter = FuturesFilter(min_volume_usdt=int(config.min_volume))
+        pair_filter = FuturesPairFilter(futures_filter)
+        valid_coin_infos = pair_filter.filter_pairs(coin_infos)
+        symbols = [c.symbol for c in valid_coin_infos][: config.scan_limit]
+    else:
+        symbols = client.get_top_symbols(limit=config.scan_limit)
     scanner_config = ScannerConfig(
         timeframe=config.timeframe,
         scan_limit=config.scan_limit,
@@ -67,10 +94,18 @@ def main() -> None:
     scanner = SignalScanner(client=client, model=model, config=scanner_config, logger=logger)
     signals = scanner.scan(symbols)
 
-    if signals and config.telegram_token and config.telegram_chat_id:
-        message = format_telegram_message(signals)
-        success = send_telegram_message(config.telegram_token, config.telegram_chat_id, message)
-        logger.info("Telegram send status: %s", success)
+    if signals:
+        # Send signals to public channel via TelegramNotifier
+        telegram_bot = None
+        channel_id = config.telegram_channel_id or config.telegram_chat_id
+        if config.telegram_token and channel_id:
+            tg_config = TelegramConfig(bot_token=config.telegram_token, channel_id=str(channel_id), user_id=str(config.telegram_user_id or ""))
+            notifier = TelegramNotifier(tg_config)
+            message = format_telegram_message(signals)
+            success = notifier.send_signal_to_channel(message)
+            logger.info("Telegram channel send status: %s", success)
+        else:
+            logger.info("Telegram token or channel id not configured; skipping channel post")
     elif not signals:
         logger.info("No high-conviction signals to send at this time")
 

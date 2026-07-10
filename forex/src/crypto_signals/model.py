@@ -14,17 +14,26 @@ from sklearn.utils.class_weight import compute_sample_weight
 from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
 
+from src.crypto_signals.backtest import backtest_model
 from src.crypto_signals.features import FEATURE_COLUMNS, get_feature_columns, prepare_training_data
 from src.crypto_signals.persistence import ModelMetadata, load_model, save_model
 
 
 class SignalModel:
-    def __init__(self, model_path: str, model_type: str = "xgboost") -> None:
+    def __init__(
+        self,
+        model_path: str,
+        model_type: str = "xgboost",
+        include_smc: bool = False,
+        smc_features: Optional[List[str]] = None,
+    ) -> None:
         self.model_path = model_path
         self.model_type = model_type.lower()
+        self.include_smc = include_smc
+        self.smc_features = smc_features or []
         self.pipeline: Optional[Pipeline] = None
         self.encoder = LabelEncoder()
-        self.feature_columns = get_feature_columns()
+        self.feature_columns = get_feature_columns(include_smc=self.include_smc, smc_features=self.smc_features)
         self.metadata: Optional[Dict[str, Any]] = None
 
     def build_pipeline(self) -> Pipeline:
@@ -96,6 +105,20 @@ class SignalModel:
             raise ValueError("Model pipeline is not loaded")
         return self.pipeline.predict_proba(features[self.feature_columns])
 
+    def feature_importance(self) -> pd.Series:
+        if self.pipeline is None:
+            raise ValueError("No trained model is available for feature importance")
+        estimator = self.pipeline.named_steps["model"]
+        if hasattr(estimator, "feature_importances_"):
+            importance = estimator.feature_importances_
+        elif hasattr(estimator, "get_booster"):
+            booster = estimator.get_booster()
+            importance_map = booster.get_score(importance_type="weight")
+            importance = np.array([importance_map.get(column, 0.0) for column in self.feature_columns])
+        else:
+            raise ValueError("Underlying model does not expose feature importance")
+        return pd.Series(importance, index=self.feature_columns).sort_values(ascending=False)
+
     def save(self) -> None:
         if self.pipeline is None:
             raise ValueError("No trained model to save")
@@ -104,6 +127,8 @@ class SignalModel:
             "created_at": datetime.utcnow().isoformat(),
             "model_type": self.model_type,
             "feature_columns": self.feature_columns,
+            "include_smc": self.include_smc,
+            "smc_features": self.smc_features,
         }
         payload = {
             "pipeline": self.pipeline,
@@ -132,14 +157,71 @@ class SignalModel:
         return Path(self.model_path).exists()
 
     @classmethod
-    def build_training_dataset(cls, frames: List[pd.DataFrame], horizon: int = 6, reward_risk: float = 2.0) -> pd.DataFrame:
+    def build_training_dataset(
+        cls,
+        frames: List[pd.DataFrame],
+        horizon: int = 6,
+        reward_risk: float = 2.0,
+        include_smc: bool = False,
+        smc_features: Optional[List[str]] = None,
+    ) -> pd.DataFrame:
         label_map = {0: "HOLD", 1: "BUY", 2: "SELL"}
         rows = []
         for frame in frames:
-            features, labels = prepare_training_data(frame, horizon=horizon, reward_risk=reward_risk)
+            features, labels = prepare_training_data(
+                frame,
+                horizon=horizon,
+                reward_risk=reward_risk,
+                include_smc=include_smc,
+                smc_features=smc_features,
+            )
             combined = features.copy()
             combined["target"] = labels.map(label_map)
             rows.append(combined)
         if not rows:
             raise ValueError("No training frames provided")
         return pd.concat(rows, axis=0, ignore_index=True)
+
+
+def train_and_backtest(
+    frame: pd.DataFrame,
+    train_window: int = 60,
+    test_window: int = 20,
+    model_type: str = "xgboost",
+    include_smc: bool = False,
+    smc_features: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    if frame.shape[0] < train_window + test_window:
+        raise ValueError("Not enough data for walk-forward backtest")
+
+    dataset = SignalModel.build_training_dataset(
+        [frame],
+        horizon=6,
+        reward_risk=2.0,
+        include_smc=include_smc,
+        smc_features=smc_features,
+    )
+
+    model = SignalModel(
+        model_path=":memory:",
+        model_type=model_type,
+        include_smc=include_smc,
+        smc_features=smc_features,
+    )
+    metrics = model.fit(dataset.drop(columns=["target"]), dataset["target"], test_size=test_window / float(train_window + test_window))
+
+    test_features = dataset.iloc[train_window : train_window + test_window].drop(columns=["target"])
+    test_labels = dataset.iloc[train_window : train_window + test_window]["target"]
+    prediction = model.predict(test_features)
+    probabilities = model.predict_proba(test_features)
+    backtest_results = backtest_model(model, test_features, test_labels, test_features["pct_return"]) if not test_features.empty else None
+
+    confidence = float(np.max(probabilities[-1])) if probabilities.size else 0.0
+    signal = prediction[-1] if len(prediction) else "HOLD"
+
+    return {
+        "metrics": metrics,
+        "backtest": backtest_results,
+        "signal": signal,
+        "confidence": confidence,
+    }

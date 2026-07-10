@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from src.crypto_signals.api import ExchangeClient
-from src.crypto_signals.features import get_feature_columns, prepare_features
+from src.crypto_signals.features import prepare_features
 from src.crypto_signals.model import SignalModel
 from src.crypto_signals.signals import Signal, build_signal, filter_signed_signals
 
@@ -38,7 +38,7 @@ class SignalScanner:
         self.model = model
         self.config = config
         self.logger = logger
-        self.feature_columns = get_feature_columns()
+        self.feature_columns = model.feature_columns
 
     def fetch_symbol_data(self, symbol: str) -> Optional[pd.DataFrame]:
         try:
@@ -67,7 +67,7 @@ class SignalScanner:
                 if df is None:
                     continue
 
-                features = prepare_features(df)
+                features = prepare_features(df, include_smc=self.model.include_smc, smc_features=self.model.smc_features)
                 latest = features.tail(1)
                 if latest.empty:
                     continue

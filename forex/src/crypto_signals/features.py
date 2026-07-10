@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+
+from src.crypto_signals.smc_features import DEFAULT_SMC_FEATURES, SMCFeatureExtractor, SMC_FEATURE_COLUMNS
 
 
 FEATURE_COLUMNS = [
@@ -178,7 +180,12 @@ def compute_market_structure(frame: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
-def prepare_features(frame: pd.DataFrame) -> pd.DataFrame:
+def prepare_smc_features(frame: pd.DataFrame, enabled_features: Optional[List[str]] = None) -> pd.DataFrame:
+    extractor = SMCFeatureExtractor(enabled_features=enabled_features)
+    return extractor.extract(frame)
+
+
+def prepare_features(frame: pd.DataFrame, include_smc: bool = False, smc_features: Optional[List[str]] = None) -> pd.DataFrame:
     data = frame.copy().sort_values("Date").reset_index(drop=True)
     data["open"] = data["Open"]
     data["high"] = data["High"]
@@ -218,6 +225,10 @@ def prepare_features(frame: pd.DataFrame) -> pd.DataFrame:
     data = compute_market_regime(data)
     data = compute_market_structure(data)
 
+    if include_smc:
+        smc_data = prepare_smc_features(data, enabled_features=smc_features)
+        data = pd.concat([data, smc_data], axis=1)
+
     data = data.fillna(0)
     return data
 
@@ -239,8 +250,14 @@ def label_actions(frame: pd.DataFrame, horizon: int = 6, reward_risk: float = 2.
     return pd.Series(labels, index=frame.index)
 
 
-def prepare_training_data(frame: pd.DataFrame, horizon: int = 6, reward_risk: float = 2.0) -> Tuple[pd.DataFrame, pd.Series]:
-    features = prepare_features(frame)
+def prepare_training_data(
+    frame: pd.DataFrame,
+    horizon: int = 6,
+    reward_risk: float = 2.0,
+    include_smc: bool = False,
+    smc_features: Optional[List[str]] = None,
+) -> Tuple[pd.DataFrame, pd.Series]:
+    features = prepare_features(frame, include_smc=include_smc, smc_features=smc_features)
     labels = label_actions(features, horizon=horizon, reward_risk=reward_risk)
     features = features.iloc[:-horizon].copy()
     labels = labels.iloc[:-horizon]
@@ -249,5 +266,9 @@ def prepare_training_data(frame: pd.DataFrame, horizon: int = 6, reward_risk: fl
     return features, labels
 
 
-def get_feature_columns() -> List[str]:
-    return FEATURE_COLUMNS.copy()
+def get_feature_columns(include_smc: bool = False, smc_features: Optional[List[str]] = None) -> List[str]:
+    columns = FEATURE_COLUMNS.copy()
+    if include_smc:
+        selected = smc_features if smc_features is not None else DEFAULT_SMC_FEATURES.copy()
+        columns.extend([feature for feature in selected if feature in SMC_FEATURE_COLUMNS])
+    return columns
