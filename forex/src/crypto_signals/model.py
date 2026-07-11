@@ -64,7 +64,13 @@ class SignalModel:
     def fit(self, features: pd.DataFrame, labels: pd.Series, test_size: float = 0.15) -> Dict[str, float]:
         X = features[self.feature_columns].copy()
         label_map = {0: "HOLD", 1: "BUY", 2: "SELL"}
-        y = labels.map(label_map).astype(str).copy()
+        y = labels.copy()
+        if y.dtype.kind in "iuf":
+            y = y.map(label_map)
+        elif y.dtype == object and y.dropna().isin(label_map.values()).all():
+            y = y.astype(str)
+        else:
+            y = y.astype(str)
         y_encoded = self.encoder.fit_transform(y)
 
         X_train, X_val, y_train, y_val = train_test_split(
