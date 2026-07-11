@@ -1,0 +1,100 @@
+name: Automated Training and Backtesting
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_train:
+        description: 'Force training when manually triggered'
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: '0 3 * * 0'
+
+jobs:
+  train-and-backtest:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ./forex
+      MODEL_PATH: models/signal_model.pkl
+      TRAINING_METRICS: reports/training_metrics.json
+      BACKTEST_REPORT: reports/backtest_report.json
+      FEATURE_IMPORTANCE: reports/feature_importance.csv
+      TRAIN_LOG: logs/training.log
+      BACKTEST_LOG: logs/backtest.log
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('forex/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r forex/requirements.txt
+
+      - name: Create artifact directories
+        run: |
+          mkdir -p models reports logs
+
+      - name: Determine training week
+        id: week
+        run: |
+          python - <<'PY'
+          import datetime, os
+          today = datetime.date.today()
+          even = today.isocalendar()[1] % 2 == 0
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+              fh.write(f"week_even={str(even).lower()}\n")
+          print(f"Training will run in even weeks only. Week {today.isocalendar()[1]} even={even}")
+          PY
+
+      - name: Run training
+        if: github.event_name == 'workflow_dispatch' || github.event.inputs.force_train == 'true' || (github.event_name == 'schedule' && steps.week.outputs.week_even == 'true')
+        run: |
+          python scripts/train.py \
+            --model-path "${{ env.MODEL_PATH }}" \
+            --feature-importance "${{ env.FEATURE_IMPORTANCE }}" \
+            --metrics-file "${{ env.TRAINING_METRICS }}" \
+            --log-file "${{ env.TRAIN_LOG }}"
+
+      - name: Run backtest
+        run: |
+          python scripts/backtest.py \
+            --model-path "${{ env.MODEL_PATH }}" \
+            --report-file "${{ env.BACKTEST_REPORT }}" \
+            --log-file "${{ env.BACKTEST_LOG }}"
+
+      - name: Commit updated artifacts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add models reports logs
+          if ! git diff --cached --quiet; then
+            git commit -m "Automated model retraining and backtest update"
+            git push
+          else
+            echo "No output changes to commit."
+          fi
+
+      - name: Upload automation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: axion-automation-artifacts
+          path: |
+            models/**
+            reports/**
+            logs/**
