@@ -73,3 +73,17 @@ jobs:
           KEY="${API_KEY:-${FALLBACK_KEY}}"
           SECRET="${API_SECRET:-${FALLBACK_SECRET}}"
           python forex/src/scripts/backtest.py --timeframe 15m --training-pairs 80 --lookback-bars 600 --api-key "$KEY" --api-secret "$SECRET" || true
+
+      - name: Send pipeline results to Telegram
+        if: ${{ secrets.TELEGRAM_TOKEN != '' && secrets.TELEGRAM_CHANNEL_ID != '' }}
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+        run: |
+          python forex/src/scripts/notify_telegram.py \
+            --telegram-token "$TELEGRAM_TOKEN" \
+            --telegram-channel-id "$TELEGRAM_CHANNEL_ID" \
+            --telegram-user-id "$TELEGRAM_USER_ID" \
+            --download-report "reports/download_summary.json" \
+            --backtest-report "reports/backtest_report.json" || true

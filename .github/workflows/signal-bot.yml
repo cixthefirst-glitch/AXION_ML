@@ -46,9 +46,6 @@ jobs:
         env:
           API_KEY: ${{ secrets.MEXC_API_KEY || secrets.API_KEY }}
           API_SECRET: ${{ secrets.MEXC_API_SECRET || secrets.API_SECRET }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
         run: |
           python forex/src/scripts/signal_bot.py \
             --timeframe 15m \
@@ -56,10 +53,7 @@ jobs:
             --lookback-bars 500 \
             --log-file logs/signal_scan.log \
             --api-key "$API_KEY" \
-            --api-secret "$API_SECRET" \
-            --telegram-token "$TELEGRAM_TOKEN" \
-            --telegram-channel-id "$TELEGRAM_CHANNEL_ID" \
-            --telegram-user-id "$TELEGRAM_USER_ID"
+            --api-secret "$API_SECRET"
 
       - name: Upload logs as artifacts
         if: always()

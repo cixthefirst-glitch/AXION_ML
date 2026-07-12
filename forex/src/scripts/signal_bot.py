@@ -13,7 +13,6 @@ sys.path.insert(0, str(PROJECT_DIR))
 from src.crypto_signals.api import MEXCExchangeClient
 from src.crypto_signals.model import SignalModel
 from src.crypto_signals.scanner import ScannerConfig, SignalScanner
-from src.crypto_signals.telegram import TelegramConfig, TelegramNotifier
 from src.crypto_signals.logger import setup_logger
 
 
@@ -25,9 +24,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-file", default="logs/signal_scan.log", help="Path to save scan log")
     parser.add_argument("--api-key", default=None, help="MEXC API key")
     parser.add_argument("--api-secret", default=None, help="MEXC API secret")
-    parser.add_argument("--telegram-token", default=None, help="Telegram bot token")
-    parser.add_argument("--telegram-channel-id", default=None, help="Telegram channel/chat id")
-    parser.add_argument("--telegram-user-id", default=None, help="Telegram user id for DM notifications")
     return parser.parse_args()
 
 
@@ -73,31 +69,11 @@ def main() -> int:
     if not signals:
         logger.info("No actionable signals found.")
     else:
-        # Prepare Telegram notifier if configured
-        tg_token = args.telegram_token
-        tg_channel = args.telegram_channel_id
-        tg_user = args.telegram_user_id or ""
-        notifier = None
-        if tg_token and tg_channel:
-            try:
-                tg_config = TelegramConfig(bot_token=tg_token, channel_id=str(tg_channel), user_id=str(tg_user))
-                notifier = TelegramNotifier(tg_config)
-            except Exception as exc:
-                logger.error("Failed to initialize Telegram notifier: %s", exc)
-
         for s in signals:
             logger.info("Signal: %s %s (%.1f%%)", s.pair, s.direction, s.confidence * 100.0)
-            try:
-                message = s.format_message() if hasattr(s, "format_message") else str(s)
-            except Exception:
-                message = str(s)
 
-            if notifier and s.confidence >= scanner_config.signal_threshold:
-                try:
-                    ok = notifier.send_signal_to_channel(message)
-                    logger.info("Telegram notification sent: %s", ok)
-                except Exception as exc:
-                    logger.error("Telegram send failed: %s", exc)
+    logger.info("Market scan completed.")
+    return 0
 
     logger.info("Hourly scan completed.")
     return 0
