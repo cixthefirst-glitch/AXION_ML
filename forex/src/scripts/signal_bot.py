@@ -75,9 +75,6 @@ def main() -> int:
     logger.info("Market scan completed.")
     return 0
 
-    logger.info("Hourly scan completed.")
-    return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
