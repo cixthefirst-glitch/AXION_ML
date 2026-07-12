@@ -36,7 +36,7 @@ def main() -> int:
     root = PROJECT_DIR
     log_path = root / args.log_file
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    logger = setup_logger(log_path)
+    logger = setup_logger(name="signal_bot", log_file=str(log_path))
 
     logger.info("Starting hourly market scan...")
 
