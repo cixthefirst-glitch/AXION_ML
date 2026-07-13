@@ -20,12 +20,12 @@ class ScannerConfig:
     scan_limit: int = 300
     lookback_bars: int = 500
     min_history: int = 120
-    signal_threshold: float = 0.90
+    signal_threshold: float = 0.65
     top_signals: int = 8
     max_workers: int = 8
     min_volume: float = 100_000
     min_atr: float = 0.0005
-    min_risk_reward: float = 2.0
+    min_risk_reward: float = 1.5
     stop_loss_multiplier: float = 1.2
     take_profit_1_multiplier: float = 2.0
     take_profit_2_multiplier: float = 4.0
@@ -45,7 +45,7 @@ class SignalScanner:
             self.logger.debug("Downloading %s", symbol)
             df = self.client.get_klines(symbol, self.config.timeframe, self.config.lookback_bars)
             if df.shape[0] < self.config.min_history:
-                self.logger.debug("Skipping %s because history is too short (%s bars)", symbol, df.shape[0])
+                self.logger.debug("Skipping %s — history too short (%s bars)", symbol, df.shape[0])
                 return None
             return df
         except Exception as exc:
@@ -67,36 +67,37 @@ class SignalScanner:
                 if df is None:
                     continue
 
-                features = prepare_features(df, include_smc=self.model.include_smc, smc_features=self.model.smc_features)
-                latest = features.tail(1)
-                if latest.empty:
-                    continue
+                try:
+                    features = prepare_features(df, include_smc=self.model.include_smc, smc_features=self.model.smc_features)
+                    latest = features.tail(1)
+                    if latest.empty:
+                        continue
 
-                current = latest.iloc[0]
-                if current["volume"] < self.config.min_volume or current["atr_14"] < self.config.min_atr:
-                    continue
+                    current = latest.iloc[0]
 
-                proba = self.model.predict_proba(latest[self.feature_columns])[0]
-                label = self.model.predict(latest[self.feature_columns])[0]
+                    if current["volume"] < self.config.min_volume or current["atr_14"] < self.config.min_atr:
+                        continue
 
-                if label == "BUY" and current["close"] < current["ema_50"]:
-                    continue
-                if label == "SELL" and current["close"] > current["ema_50"]:
-                    continue
+                    proba = self.model.predict_proba(latest[self.feature_columns])[0]
+                    label = self.model.predict(latest[self.feature_columns])[0]
 
-                signal = build_signal(
-                    symbol=symbol,
-                    timeframe=self.config.timeframe,
-                    features=current,
-                    label=label,
-                    probabilities=proba,
-                    threshold=self.config.signal_threshold,
-                    stop_loss_multiplier=self.config.stop_loss_multiplier,
-                    take_profit_1_multiplier=self.config.take_profit_1_multiplier,
-                    take_profit_2_multiplier=self.config.take_profit_2_multiplier,
-                )
-                if signal is not None and signal.risk_reward >= self.config.min_risk_reward:
-                    results.append(signal)
+                    signal = build_signal(
+                        symbol=symbol,
+                        timeframe=self.config.timeframe,
+                        features=current,
+                        label=label,
+                        probabilities=proba,
+                        threshold=self.config.signal_threshold,
+                        stop_loss_multiplier=self.config.stop_loss_multiplier,
+                        take_profit_1_multiplier=self.config.take_profit_1_multiplier,
+                        take_profit_2_multiplier=self.config.take_profit_2_multiplier,
+                    )
+                    if signal is not None and signal.risk_reward >= self.config.min_risk_reward:
+                        results.append(signal)
+
+                except Exception as exc:
+                    self.logger.warning("Error processing %s: %s", symbol, exc)
+                    continue
 
         signals = filter_signed_signals(results, self.config.top_signals)
         self.logger.info("Found %s actionable signals", len(signals))
