@@ -1,19 +1,24 @@
-name: Scheduled Model Training and Telegram Report
+name: Scheduled Model Training
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '0 2 * * *'   # runs once daily at 2AM UTC
   workflow_dispatch:
 
 jobs:
   train-and-report:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       PYTHONUNBUFFERED: 1
       PYTHONPATH: ./forex
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -34,8 +39,7 @@ jobs:
           if [ -f forex/requirements.txt ]; then python -m pip install -r forex/requirements.txt; fi
 
       - name: Create output directories
-        run: |
-          mkdir -p logs reports models
+        run: mkdir -p logs reports models
 
       - name: Train the model
         env:
@@ -57,7 +61,15 @@ jobs:
             --api-key "$KEY" \
             --api-secret "$SECRET"
 
-      - name: Send training report to admin DM
+      - name: Commit trained model to repo
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add models/signal_model.pkl reports/ logs/ || true
+          git diff --cached --quiet || git commit -m "chore: update trained model [skip ci]"
+          git push
+
+      - name: Send training report to admin
         if: always()
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -81,5 +93,4 @@ jobs:
           path: |
             logs/**
             reports/**
-            models/**
           retention-days: 30
