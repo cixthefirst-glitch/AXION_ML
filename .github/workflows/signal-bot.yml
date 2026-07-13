@@ -2,7 +2,7 @@ name: Signal Bot - Hourly Market Scan
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '0 * * * *'   # every hour
   workflow_dispatch:
 
 jobs:
@@ -11,6 +11,7 @@ jobs:
     env:
       PYTHONUNBUFFERED: 1
       PYTHONPATH: ./forex
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -52,6 +53,7 @@ jobs:
             --timeframe 15m \
             --scan-limit 80 \
             --lookback-bars 500 \
+            --model-path models/signal_model.pkl \
             --log-file logs/signal_scan.log \
             --api-key "$KEY" \
             --api-secret "$SECRET" \
@@ -59,7 +61,7 @@ jobs:
             --telegram-channel-id "$TELEGRAM_CHANNEL_ID" \
             --telegram-user-id "$TELEGRAM_USER_ID"
 
-      - name: Upload logs as artifacts
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
